@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BC250 Switch Setup</title>
+  <style>
+    :root { --bg:#121212; --card:#1e1e1e; --fg:#eee; --muted:#9e9e9e;
+            --accent:#ffd217; --accent2:#2c6bfd; --err:#ff5252; --ok:#4caf50; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:ui-monospace,Menlo,Consolas,monospace;
+           background:var(--bg); color:var(--fg); min-height:100vh;
+           display:flex; justify-content:center; align-items:flex-start; }
+    .wrap { width:100%; max-width:480px; padding:24px 16px; }
+    h1 { color:var(--accent); font-size:20px; margin:8px 0 4px; }
+    .sub { color:var(--muted); font-size:13px; margin-bottom:20px; }
+    .card { background:var(--card); border-radius:12px; padding:18px; margin-bottom:16px; }
+    label { display:block; font-size:12px; color:var(--muted); margin:10px 0 4px; }
+    input { width:100%; padding:11px; border-radius:8px; border:1px solid #333;
+            background:#161616; color:var(--fg); font:inherit; font-size:15px; }
+    button { width:100%; padding:12px; margin-top:16px; border:none; border-radius:8px;
+             background:var(--accent); color:#000; font:inherit; font-weight:bold;
+             font-size:15px; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:default; }
+    button.secondary { background:transparent; color:var(--accent2); border:1px solid var(--accent2); }
+    .msg { font-size:13px; margin-top:12px; min-height:18px; }
+    .msg.err { color:var(--err); } .msg.ok { color:var(--ok); }
+    .hidden { display:none; }
+    .dev { display:flex; align-items:center; gap:10px; padding:11px; border-radius:8px;
+           border:1px solid #333; margin-bottom:8px; cursor:pointer; background:#161616; }
+    .dev.sel { border-color:var(--accent); background:#2a2715; }
+    .dev .nm { flex:1; min-width:0; }
+    .dev .nm b { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .dev .nm small { color:var(--muted); }
+    .dev .rssi { color:var(--muted); font-size:12px; white-space:nowrap; }
+    .row { display:flex; gap:10px; } .row > * { flex:1; }
+    .scanning { color:var(--muted); font-size:12px; margin:6px 0; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>BC250 Switch</h1>
+    <div class="sub" id="subtitle">Setup portal</div>
+
+    <!-- Password screen -->
+    <div class="card hidden" id="screen-pass">
+      <div id="pass-title" style="font-size:15px;font-weight:bold"></div>
+      <label for="pw">Password</label>
+      <input id="pw" type="password" autocomplete="new-password" />
+      <div id="confirm-wrap">
+        <label for="pw2">Confirm password</label>
+        <input id="pw2" type="password" autocomplete="new-password" />
+      </div>
+      <button id="pass-btn">Continue</button>
+      <div class="msg" id="pass-msg"></div>
+    </div>
+
+    <!-- Device selection screen -->
+    <div class="card hidden" id="screen-dev">
+      <div style="font-size:15px;font-weight:bold">Select your controller</div>
+      <div class="sub" style="margin:6px 0 0">Turn the controller on so it appears below.</div>
+      <div class="scanning" id="scan-state">Scanning…</div>
+      <div id="dev-list"></div>
+      <label for="manual">Or enter a MAC manually</label>
+      <input id="manual" placeholder="aa:bb:cc:dd:ee:ff" />
+      <button id="save-btn" disabled>Bind controller &amp; finish</button>
+      <div class="msg" id="dev-msg"></div>
+    </div>
+  </div>
+
+  <script>
+    let token = null;
+    let selected = null;
+    let pollTimer = null;
+
+    const $ = (id) => document.getElementById(id);
+
+    async function api(path, method = "GET", body = null) {
+      const headers = {};
+      if (body) headers["Content-Type"] = "application/json";
+      if (token) headers["X-Auth-Token"] = token;
+      const res = await fetch(path, {
+        method, headers, body: body ? JSON.stringify(body) : undefined,
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) { /* empty */ }
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      return data;
+    }
+
+    function show(screen) {
+      $("screen-pass").classList.toggle("hidden", screen !== "pass");
+      $("screen-dev").classList.toggle("hidden", screen !== "dev");
+    }
+
+    // --- Password screen ---
+    let creating = true;
+    function initPassScreen(passwordSet) {
+      creating = !passwordSet;
+      $("pass-title").textContent = creating ? "Create a portal password" : "Enter portal password";
+      $("confirm-wrap").classList.toggle("hidden", !creating);
+      $("pass-btn").textContent = creating ? "Create & continue" : "Unlock";
+      show("pass");
+    }
+
+    $("pass-btn").onclick = async () => {
+      const pw = $("pw").value;
+      const msg = $("pass-msg");
+      msg.className = "msg";
+      if (creating) {
+        if (pw.length < 6) { msg.className = "msg err"; msg.textContent = "Min 6 characters."; return; }
+        if (pw !== $("pw2").value) { msg.className = "msg err"; msg.textContent = "Passwords don't match."; return; }
+      }
+      try {
+        $("pass-btn").disabled = true;
+        const path = creating ? "/api/password" : "/api/login";
+        const data = await api(path, "POST", { password: pw });
+        token = data.token;
+        gotoDeviceScreen();
+      } catch (e) {
+        msg.className = "msg err"; msg.textContent = e.message;
+      } finally {
+        $("pass-btn").disabled = false;
+      }
+    };
+
+    // --- Device screen ---
+    function gotoDeviceScreen() {
+      show("dev");
+      pollDevices();
+      pollTimer = setInterval(pollDevices, 2000);
+    }
+
+    function rssiBars(r) {
+      if (r >= -55) return "▂▄▆█";
+      if (r >= -67) return "▂▄▆";
+      if (r >= -80) return "▂▄";
+      return "▂";
+    }
+
+    async function pollDevices() {
+      try {
+        const data = await api("/api/ble/devices");
+        const list = (data.devices || []).sort((a, b) => b.rssi - a.rssi);
+        $("scan-state").textContent = list.length
+          ? "Scanning… " + list.length + " device(s) seen"
+          : "Scanning… (no devices yet)";
+        const box = $("dev-list");
+        box.innerHTML = "";
+        for (const d of list) {
+          const el = document.createElement("div");
+          el.className = "dev" + (selected === d.addr ? " sel" : "");
+          el.innerHTML =
+            '<div class="nm"><b>' + (d.name || "(unknown)") + "</b>" +
+            "<small>" + d.addr + "</small></div>" +
+            '<div class="rssi">' + rssiBars(d.rssi) + "<br>" + d.rssi + " dBm</div>";
+          el.onclick = () => { selected = d.addr; $("manual").value = ""; refreshSel(); };
+          box.appendChild(el);
+        }
+      } catch (e) {
+        $("scan-state").textContent = "Scan error: " + e.message;
+      }
+    }
+
+    $("manual").oninput = () => {
+      const v = $("manual").value.trim().toLowerCase();
+      selected = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(v) ? v : null;
+      refreshSel();
+    };
+
+    function refreshSel() {
+      $("save-btn").disabled = !selected;
+      document.querySelectorAll(".dev").forEach((el) => {
+        const addr = el.querySelector("small").textContent;
+        el.classList.toggle("sel", addr === selected);
+      });
+    }
+
+    $("save-btn").onclick = async () => {
+      const msg = $("dev-msg");
+      msg.className = "msg";
+      try {
+        $("save-btn").disabled = true;
+        await api("/api/ble/select", "POST", { addr: selected });
+        await api("/api/finish", "POST", {});
+        if (pollTimer) clearInterval(pollTimer);
+        msg.className = "msg ok";
+        msg.textContent = "Bound " + selected + ". Rebooting into normal mode…";
+        $("scan-state").textContent = "";
+        $("dev-list").innerHTML = "";
+      } catch (e) {
+        msg.className = "msg err"; msg.textContent = e.message;
+        $("save-btn").disabled = false;
+      }
+    };
+
+    // --- Boot ---
+    (async () => {
+      try {
+        const st = await api("/api/status");
+        if (st.wakeAddr) $("subtitle").textContent = "Currently bound: " + st.wakeAddr;
+        initPassScreen(st.passwordSet);
+      } catch (e) {
+        $("subtitle").textContent = "Cannot reach device: " + e.message;
+      }
+    })();
+  </script>
+</body>
+</html>
