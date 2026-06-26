@@ -101,20 +101,26 @@ static void psuOff() {
   Serial.println("[PSU ] PS_ON# released (high-Z) -> PSU OFF");
 }
 
-// Shared power-on path, used by both the button and the BLE wake.
-static void powerOn(const char *reason) {
+// Shared power-on path, used by both the button and the BLE wake. Takes the
+// loop's `now` rather than calling millis() itself: the BOOTING timeout compares
+// against the `now` cached at the top of normalLoop(), and a fresh millis() here
+// can land a millisecond past it. Since the comparison is unsigned, bootStart >
+// now makes (now - bootStart) underflow to a huge value and trip the timeout on
+// the very next loop. Sharing one clock per iteration keeps the math monotonic.
+static void powerOn(const char *reason, unsigned long now) {
   Serial.printf("[ACT ] %s -> powering on\n", reason);
   psuOn();
-  bootStart = millis();
+  bootStart = now;
   setState(STATE_BOOTING);
 }
 
 // Shared power-off path. Starts the BLE-wake cooldown so the controller's
-// post-shutdown reconnect burst can't immediately wake us again.
-static void powerOff(const char *reason) {
+// post-shutdown reconnect burst can't immediately wake us again. Takes `now` for
+// the same single-clock-per-loop reason as powerOn().
+static void powerOff(const char *reason, unsigned long now) {
   Serial.printf("[ACT ] %s -> powering off\n", reason);
   psuOff();
-  bleInhibitUntil = millis() + BLE_WAKE_COOLDOWN_MS;
+  bleInhibitUntil = now + BLE_WAKE_COOLDOWN_MS;
   setState(STATE_OFF);
 }
 
@@ -252,7 +258,7 @@ static void normalLoop() {
       Serial.printf("[BTN ] released after %lu ms\n", held);
       if (pressStartedOff && !setupFired && state == STATE_OFF &&
           held < SETUP_HOLD_MS) {
-        powerOn("short press while OFF");
+        powerOn("short press while OFF", now);
       }
     }
   }
@@ -268,7 +274,7 @@ static void normalLoop() {
       (now - pressStart) >= LONG_PRESS_MS) {
     // Long hold that began while ON -> force off.
     longPressFired = true;
-    powerOff("long press (>5s) while ON");
+    powerOff("long press (>5s) while ON", now);
   }
 
   // --- BLE controller wake ("machine follows controller") ---
@@ -280,7 +286,7 @@ static void normalLoop() {
       bleSeenEver && (now - bleLastSeen) < BLE_PRESENCE_TIMEOUT_MS;
   bool bleInhibited = (int32_t)(bleInhibitUntil - now) > 0;
   if (state == STATE_OFF && blePresent && !bleInhibited) {
-    powerOn("controller present (BLE)");
+    powerOn("controller present (BLE)", now);
   }
 
   bool boardChanged = debounce(boardRaw, &boardSenseStable, &boardSenseLastRaw,
@@ -295,14 +301,14 @@ static void normalLoop() {
         Serial.println("[ACT ] TPMS1 HIGH -> board is up");
         setState(STATE_ON);
       } else if ((now - bootStart) >= BOOT_TIMEOUT_MS) {
-        powerOff("boot timed out, board never signalled UP");
+        powerOff("boot timed out, board never signalled UP", now);
       }
       break;
 
     case STATE_ON:
       // Board dropped TPMS1 on its own (OS shutdown / crash) -> follow it down.
       if (boardChanged && !boardSenseStable) {
-        powerOff("TPMS1 LOW while ON, board shut down");
+        powerOff("TPMS1 LOW while ON, board shut down", now);
       }
       break;
 
