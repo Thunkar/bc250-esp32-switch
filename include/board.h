@@ -36,6 +36,15 @@ const int BOARD_SENSE = 3;
 const int SENSE_HIGH_MV = 2000;
 const int SENSE_LOW_MV  = 800;
 
+// TPMS1 is high-impedance and the ESP32 single-shot ADC is noisy, so an isolated
+// analogReadMilliVolts() can spike hundreds of mV above the true level. Once the
+// board powers off the line floats near 0V but still throws the occasional spike
+// past SENSE_HIGH_MV. A single such spike flips the hysteresis HIGH for one loop,
+// which restarts the BOARD_OFF_DEBOUNCE_MS countdown -> shutdown detection stalls
+// for an unbounded, random time. Averaging this many samples per reading is a
+// low-pass that keeps a lone spike from ever crossing a threshold.
+const int SENSE_OVERSAMPLE = 16;
+
 //*******  Logic levels  ***************
 
 const int PS_ON_ASSERT  = LOW;   // PSU on

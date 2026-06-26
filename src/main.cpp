@@ -74,7 +74,14 @@ static void setState(PowerState next) {
 static bool senseLevel = false;
 
 static bool readBoardSense(uint32_t *outMv = nullptr) {
-  uint32_t mv = analogReadMilliVolts(BOARD_SENSE);
+  // Average several reads to reject single-sample ADC/line spikes. Without this,
+  // one stray spike past SENSE_HIGH_MV chatters the hysteresis and restarts the
+  // board-off debounce, stalling shutdown detection (see SENSE_OVERSAMPLE).
+  uint32_t acc = 0;
+  for (int i = 0; i < SENSE_OVERSAMPLE; i++) {
+    acc += analogReadMilliVolts(BOARD_SENSE);
+  }
+  uint32_t mv = acc / SENSE_OVERSAMPLE;
   if (outMv) *outMv = mv;
   if (senseLevel) {
     if (mv < SENSE_LOW_MV) senseLevel = false;
