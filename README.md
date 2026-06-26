@@ -34,6 +34,43 @@ and the board.
 `TPMS1` is a higher-impedance signal that hovers near the logic threshold, so it's read
 as an analog voltage with hysteresis rather than a digital pin.
 
+### Connector pinouts
+
+**ATX 24-pin main connector** — tap three pins:
+
+```
+               +3.3V ─┤  1 │ 13 ├─ +3.3V
+               +3.3V ─┤  2 │ 14 ├─ −12V
+                 GND ─┤  3 │ 15 ├─ GND
+                 +5V ─┤  4 │ 16 ├─ PS_ON#   ◄── GPIO4  (green, open-drain, active LOW)
+                 GND ─┤  5 │ 17 ├─ GND      ◄── ESP GND (any GND pin works)
+                 +5V ─┤  6 │ 18 ├─ GND
+                 GND ─┤  7 │ 19 ├─ GND
+              PWR_OK ─┤  8 │ 20 ├─ (RSVD)
+ESP 5V/VIN ◄── +5VSB ─┤  9 │ 21 ├─ +5V
+                +12V ─┤ 10 │ 22 ├─ +5V
+                +12V ─┤ 11 │ 23 ├─ +5V
+               +3.3V ─┤ 12 │ 24 ├─ GND
+```
+
+**TPMS1 header** — single pin for board-power sense:
+
+```
+   PCICLK ─┤  1   2 ├─ GND
+    FRAME ─┤  3   4 ├─ SMB_CLK_MAIN
+  PCIRST# ─┤  5   6 ├─ SMB_DATA_MAIN
+     LAD3 ─┤  7   8 ├─ LAD2
+       3V ─┤  9  10 ├─ LAD1      ◄── pin 9 (3V) = board-on sense ──► GPIO3
+     LAD0 ─┤ 11  12 ├─ GND
+          ─┤     14 ├─ S_PWRDWN#
+     3VSB ─┤ 15  16 ├─ SERIRQ#
+      GND ─┤ 17  18 ├─ GND
+```
+
+Pin 9 is the only TPMS1 pin used: it reads ~3.3 V when the board is powered and 0 V when
+off. No ground wire is needed from this header — the ESP already shares ground with the
+board through the ATX connector.
+
 ## Button controls
 
 | Action | Result |
@@ -66,15 +103,8 @@ PlatformIO (pioarduino). Two steps — firmware and the portal's web UI (a singl
 `app/index.html` packed into SPIFFS):
 
 ```bash
-pio run -e esp32-c3-devkitm-1 -t upload     # firmware
-pio run -e esp32-c3-devkitm-1 -t uploadfs   # web UI filesystem
-```
-
-A second `scanner` environment flashes a standalone BLE scanner (`src/ble_scan.cpp`)
-for discovering a controller's advertisement details:
-
-```bash
-pio run -e scanner -t upload && pio device monitor
+pio run -t upload     # firmware
+pio run -t uploadfs   # web UI filesystem
 ```
 
 ## Notes
