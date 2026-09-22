@@ -2,12 +2,14 @@
 
 An ESP32-C3 power controller for an AMD **BC250** board running as a desktop. The
 BC250 is fed from a PCI-E connector and has no ATX power button, so this firmware
-drives the SFX PSU's `PS_ON#` line and senses board power, giving you a real power
-button — plus optional "turn on when I pick up my controller" via Bluetooth.
+drives the SFX PSU's `PS_ON#` line, senses board power, and can pulse the
+motherboard's power-button pads for graceful ACPI shutdown — plus optional
+"turn on when I pick up my controller" via Bluetooth.
 
 ## Features
 
-- **Push-button power**: tap to turn on; hold 5 s while running to force off.
+- **Push-button power**: tap to turn on; tap while running for graceful ACPI shutdown;
+  hold 5 s to force off.
 - **Follows the board**: if the OS shuts the board down, the PSU is cut automatically.
 - **Boot watchdog**: if the board doesn't come up within 10 s, the PSU is released.
 - **BLE controller wake** (optional): when a bound controller (e.g. an 8BitDo) powers
@@ -26,6 +28,7 @@ and the board.
 | GPIO6 | Momentary switch, terminal B | Driven LOW as the switch's ground |
 | GPIO4 | ATX `PS_ON#` (green wire) | **Open-drain**, active LOW: LOW = PSU on, released = off |
 | GPIO3 | BC250 `TPMS1` (pin 9) | ~3.3 V when the board is up, 0 when off |
+| GPIO7 | BC250 power-button solder pads | **Open-drain**, 200 ms LOW pulse = ACPI power button press |
 | 5VSB / GND | PSU standby + common ground | Permanent power for the ESP |
 
 `PS_ON#` idles at ~5 V (pulled up inside the PSU). GPIO4 is driven open-drain so the
@@ -71,12 +74,25 @@ Pin 9 is the only TPMS1 pin used: it reads ~3.3 V when the board is powered and 
 off. No ground wire is needed from this header — the ESP already shares ground with the
 board through the ATX connector.
 
+### Motherboard power button (GPIO7)
+
+The BC250 has power/reset button solder pads on the **bottom side** of the board. GPIO7
+connects to the power button pad pair — solder a wire to one pad and share the common
+ground. The ESP pulses GPIO7 LOW for 200 ms (open-drain) to simulate pressing a physical
+power button, triggering a graceful ACPI shutdown through the OS.
+
+To locate the pads: flip the BC250 over and find the grid of small solder pads near the
+edge — see the
+[BC250 PSU adapter wiring diagram](https://github.com/mosfetparty/bc250-psu-adapter/blob/2e8af98586867503f02431941fe0897930b185ee/FSP500-30AS%20%E2%80%94%20Plug-n-Play%20Edition/Wiring%20Diagram/FSP500%20PnP%20-%20BC250%20PSU%20Adapter.pdf)
+by mosfetparty for help identifying and soldering to these pads.
+
 ## Button controls
 
 | Action | Result |
 |--------|--------|
 | Tap while **off** | Power on |
-| Hold ≥ 5 s while **on** | Force power off |
+| Tap while **on** | Graceful ACPI shutdown (200 ms pulse on GPIO7) |
+| Hold ≥ 5 s while **on** | Force power off (hard PSU cutoff) |
 | Hold ≥ 8 s while **off** | Enter WiFi setup portal |
 
 The button is the primary control and always works, even with no controller configured.

@@ -12,9 +12,11 @@
 // -------------
 //   * Asserting PS_ON# turns the PSU on; the BC250 is expected to power up from
 //     applied power (BIOS "restore on AC power"), so PSU on == board boots.
-//   * We have no wire to the board's power button, so "turning the board off"
-//     means cutting PSU power via PS_ON#. This is a hard power-off, not a
-//     graceful OS shutdown.
+//   * A short press while ON sends a momentary pulse on GPIO7 (MOBO_PWR_PIN)
+//     to the motherboard's front-panel power header, triggering a graceful
+//     ACPI shutdown through the OS.
+//   * A long press (5s) while ON does a hard power-off by cutting PSU power
+//     via PS_ON# — this is the fallback if the OS doesn't respond.
 //   * If the board shuts itself down (e.g. OS shutdown), TPMS1 drops to 0 while
 //     the PSU is still energized. We detect that and release PS_ON# so the PSU
 //     follows the board down.
@@ -37,6 +39,11 @@ static unsigned long pressStart        = 0;
 static bool          pressStartedOff   = false;  // press began while OFF
 static bool          longPressFired    = false;
 static bool          setupFired        = false;
+static bool          shortPressOnFired = false;  // short press while ON (graceful)
+
+// --- Motherboard power-button pulse (non-blocking) ---
+static bool          moboPulseActive   = false;
+static unsigned long moboPulseStart    = 0;
 
 // --- Board-sense debounce ---
 static bool          boardSenseStable  = false;  // debounced TPMS1 HIGH
@@ -99,6 +106,23 @@ static void psuOn() {
 static void psuOff() {
   digitalWrite(PS_ON_PIN, PS_ON_RELEASE);
   Serial.println("[PSU ] PS_ON# released (high-Z) -> PSU OFF");
+}
+
+// Begin a momentary pulse on the motherboard power-button header.
+// The pin is open-drain: LOW sinks the header (simulates button press),
+// HIGH goes high-Z (releases it). The pulse is ended in the main loop
+// after MOBO_PWR_PULSE_MS so we don't block.
+static void moboPulseBegin() {
+  digitalWrite(MOBO_PWR_PIN, LOW);
+  moboPulseActive = true;
+  moboPulseStart = millis();
+  Serial.println("[MOBO] power button pulse START");
+}
+
+static void moboPulseEnd() {
+  digitalWrite(MOBO_PWR_PIN, HIGH);  // high-Z (open-drain)
+  moboPulseActive = false;
+  Serial.println("[MOBO] power button pulse END");
 }
 
 // Shared power-on path, used by both the button and the BLE wake. Takes the
@@ -184,6 +208,10 @@ static void normalBegin() {
   pinMode(PS_ON_PIN, OUTPUT_OPEN_DRAIN);
   digitalWrite(PS_ON_PIN, PS_ON_RELEASE);
 
+  // Motherboard power button header: open-drain, idles high-Z.
+  pinMode(MOBO_PWR_PIN, OUTPUT_OPEN_DRAIN);
+  digitalWrite(MOBO_PWR_PIN, HIGH);  // high-Z = released
+
   // Switch: GPIO6 = local ground, GPIO5 = sensed input with pull-up.
   pinMode(BUTTON_GND, OUTPUT);
   digitalWrite(BUTTON_GND, LOW);
@@ -237,6 +265,11 @@ void setup() {
 static void normalLoop() {
   unsigned long now = millis();
 
+  // --- Complete motherboard power-button pulse (non-blocking) ---
+  if (moboPulseActive && (now - moboPulseStart) >= MOBO_PWR_PULSE_MS) {
+    moboPulseEnd();
+  }
+
   // --- Sample & debounce inputs ---
   uint32_t senseMv;
   bool buttonRaw = (digitalRead(BUTTON_SENSE) == LOW);   // pressed == LOW
@@ -250,15 +283,22 @@ static void normalLoop() {
       pressStartedOff = (state == STATE_OFF);
       longPressFired = false;
       setupFired = false;
+      shortPressOnFired = false;
       Serial.println("[BTN ] pressed");
     } else {
-      // Released. A short tap that began while OFF powers on (power-on is on
-      // release so that a long hold from OFF can mean "enter setup" instead).
+      // Released.
       unsigned long held = now - pressStart;
       Serial.printf("[BTN ] released after %lu ms\n", held);
+
       if (pressStartedOff && !setupFired && state == STATE_OFF &&
           held < SETUP_HOLD_MS) {
+        // Short tap while OFF -> power on.
         powerOn("short press while OFF", now);
+      } else if (!pressStartedOff && !longPressFired && state == STATE_ON &&
+                 held < LONG_PRESS_MS && !shortPressOnFired) {
+        // Short tap while ON -> graceful ACPI shutdown via mobo header pulse.
+        shortPressOnFired = true;
+        moboPulseBegin();
       }
     }
   }
